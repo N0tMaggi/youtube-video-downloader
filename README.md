@@ -7,7 +7,7 @@ A simple and easy-to-use YouTube downloader script for downloading audio and vid
 - Option to choose the download format.
 - Ability to select the download directory.
 - Built-in support for FFmpeg for audio conversion (MP3).
-- Interactive user interface with a spinning loader during download.
+- Interactive user interface.
 
 ## Requirements
 Before running this script, ensure that the following software is installed on your system:
