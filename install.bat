@@ -17,8 +17,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-REM Install required Python packages
-pip install -r requirements.txt
+REM Install required Python packages (force latest to avoid YouTube signature breaks)
+python -m pip install --upgrade -r requirements.txt
 
 REM Check for FFmpeg
 where ffmpeg >nul 2>&1

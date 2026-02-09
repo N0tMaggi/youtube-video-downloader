@@ -17,6 +17,7 @@ init(autoreset=True)
 # --------------------------
 CONFIG_FILE = "config.json"
 DEFAULT_DOWNLOAD_DIR = os.path.join(os.environ['USERPROFILE'], 'Desktop')
+MIN_YT_DLP_VERSION = "2026.02.04"
 
 FFMPEG_MSG = f"""
 {Back.RED}{Fore.WHITE} FFMPEG REQUIRED {Style.RESET_ALL}
@@ -30,6 +31,42 @@ Or use the following command:
 > winget install ffmpeg
 --> And then restart this program
 """
+
+# --------------------------
+# Dependency Checks
+# --------------------------
+def _version_tuple(version_str):
+    """Convert a version like '2026.2.4' into a comparable tuple."""
+    parts = []
+    for chunk in version_str.split('.'):
+        try:
+            parts.append(int(chunk))
+        except ValueError:
+            break
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def ensure_recent_yt_dlp():
+    """
+    Fail fast when yt-dlp is outdated, because old builds break on YouTube's
+    rolling signature changes (nsig errors / empty downloads).
+    If outdated, try to upgrade in-place and ask for a restart.
+    """
+    current = youtube_dl.version.__version__
+    if _version_tuple(current) < _version_tuple(MIN_YT_DLP_VERSION):
+        print(f"{Back.RED}{Fore.WHITE} UPDATE REQUIRED {Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Installed yt-dlp {current} is older than required {MIN_YT_DLP_VERSION}.{Style.RESET_ALL}")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", f"yt-dlp>={MIN_YT_DLP_VERSION}"
+            ])
+            print(f"{Fore.GREEN}yt-dlp updated. Please restart the downloader.{Style.RESET_ALL}")
+        except Exception as e:
+            print(f"{Back.RED}{Fore.WHITE} AUTO-UPDATE FAILED {Style.RESET_ALL} {e}")
+            print(f"{Fore.CYAN}Manual fix:{Style.RESET_ALL} {sys.executable} -m pip install --upgrade \"yt-dlp>={MIN_YT_DLP_VERSION}\"")
+        sys.exit(1)
 
 # --------------------------
 # Animation Utilities
@@ -275,6 +312,7 @@ class YoutubeDownloader:
 # Main Execution Loop
 # --------------------------
 def main():
+    ensure_recent_yt_dlp()
     downloader = YoutubeDownloader()
     while True:
         downloader.download_video()
