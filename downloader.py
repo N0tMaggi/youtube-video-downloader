@@ -1,42 +1,130 @@
-import yt_dlp as youtube_dl
 import os
 import sys
 import time
-import threading
 import json
-from itertools import cycle
-from colorama import Fore, Back, Style, init
-from shutil import which
 import subprocess
+from shutil import which
+from typing import Optional, Dict, Any
 
-# Initialize colorama 
-init(autoreset=True)
+import yt_dlp as youtube_dl
+import questionary
+from questionary import Style as QStyle
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    BarColumn,
+    TextColumn,
+    DownloadColumn,
+    TransferSpeedColumn,
+    TimeRemainingColumn
+)
+from rich import box
 
 # --------------------------
-# Constants and Configuration
+# Global Setup & Styling
 # --------------------------
+console = Console()
+
+custom_style = QStyle([
+    ('qmark', 'fg:#00ffff bold'),
+    ('question', 'bold fg:#ffffff'),
+    ('answer', 'fg:#00ff88 bold'),
+    ('pointer', 'fg:#ff007f bold'),
+    ('highlighted', 'fg:#00ffff bold'),
+    ('selected', 'fg:#00ff88'),
+    ('separator', 'fg:#888888'),
+    ('instruction', 'fg:#aaaaaa italic'),
+    ('text', 'fg:#ffffff'),
+])
+
 CONFIG_FILE = "config.json"
-DEFAULT_DOWNLOAD_DIR = os.path.join(os.environ['USERPROFILE'], 'Desktop')
+DEFAULT_DOWNLOAD_DIR = os.path.join(os.environ.get('USERPROFILE', ''), 'Desktop')
 MIN_YT_DLP_VERSION = "2026.02.04"
 
-FFMPEG_MSG = f"""
-{Back.RED}{Fore.WHITE} FFMPEG REQUIRED {Style.RESET_ALL}
-{Fore.YELLOW}Please install FFmpeg for audio conversions:
-1. Download from {Fore.CYAN}https://ffmpeg.org/
-2. Add to system PATH
-3. Restart this program
-
-------------
-Or use the following command:
-> winget install ffmpeg
---> And then restart this program
-"""
+BROWSER_DEFS = {
+    'firefox': {
+        'name': 'Firefox',
+        'icon': '🦊',
+        'exe': 'firefox.exe',
+        'paths': [
+            os.path.join(os.environ.get('APPDATA', ''), 'Mozilla', 'Firefox', 'Profiles')
+        ],
+        'note': 'Recommended (works reliably even while browser is open)'
+    },
+    'brave': {
+        'name': 'Brave',
+        'icon': '🦁',
+        'exe': 'brave.exe',
+        'paths': [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'BraveSoftware', 'Brave-Browser', 'User Data')
+        ],
+        'note': 'Chromium (temporarily close browser if cookie lock error occurs)'
+    },
+    'chrome': {
+        'name': 'Google Chrome',
+        'icon': '🌐',
+        'exe': 'chrome.exe',
+        'paths': [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Google', 'Chrome', 'User Data'),
+            os.path.join(os.environ.get('ProgramFiles', ''), 'Google', 'Chrome'),
+            os.path.join(os.environ.get('ProgramFiles(x86)', ''), 'Google', 'Chrome')
+        ],
+        'note': 'Chromium'
+    },
+    'edge': {
+        'name': 'Microsoft Edge',
+        'icon': '🌊',
+        'exe': 'msedge.exe',
+        'paths': [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Microsoft', 'Edge', 'User Data')
+        ],
+        'note': 'Chromium'
+    },
+    'opera': {
+        'name': 'Opera',
+        'icon': '🔴',
+        'exe': 'opera.exe',
+        'paths': [
+            os.path.join(os.environ.get('APPDATA', ''), 'Opera Software', 'Opera Stable')
+        ],
+        'note': 'Chromium'
+    },
+    'opera_gx': {
+        'name': 'Opera GX',
+        'icon': '🎮',
+        'exe': 'opera.exe',
+        'paths': [
+            os.path.join(os.environ.get('APPDATA', ''), 'Opera Software', 'Opera GX Stable')
+        ],
+        'note': 'Chromium'
+    },
+    'vivaldi': {
+        'name': 'Vivaldi',
+        'icon': '🧭',
+        'exe': 'vivaldi.exe',
+        'paths': [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Vivaldi', 'User Data')
+        ],
+        'note': 'Chromium'
+    },
+    'chromium': {
+        'name': 'Chromium',
+        'icon': '⚡',
+        'exe': 'chromium.exe',
+        'paths': [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Chromium', 'User Data')
+        ],
+        'note': 'Chromium'
+    }
+}
 
 # --------------------------
-# Dependency Checks
+# Helper Utilities
 # --------------------------
-def _version_tuple(version_str):
-    """Convert a version like '2026.2.4' into a comparable tuple."""
+def _version_tuple(version_str: str):
     parts = []
     for chunk in version_str.split('.'):
         try:
@@ -49,278 +137,406 @@ def _version_tuple(version_str):
 
 
 def ensure_recent_yt_dlp():
-    """
-    Fail fast when yt-dlp is outdated, because old builds break on YouTube's
-    rolling signature changes (nsig errors / empty downloads).
-    If outdated, try to upgrade in-place and ask for a restart.
-    """
     current = youtube_dl.version.__version__
     if _version_tuple(current) < _version_tuple(MIN_YT_DLP_VERSION):
-        print(f"{Back.RED}{Fore.WHITE} UPDATE REQUIRED {Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}Installed yt-dlp {current} is older than required {MIN_YT_DLP_VERSION}.{Style.RESET_ALL}")
+        console.print(Panel(
+            f"[bold red]UPDATE REQUIRED[/bold red]\n"
+            f"Installed yt-dlp ({current}) is older than required ({MIN_YT_DLP_VERSION}).\n"
+            f"Upgrading automatically...",
+            border_style="red"
+        ))
         try:
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", f"yt-dlp>={MIN_YT_DLP_VERSION}"
             ])
-            print(f"{Fore.GREEN}yt-dlp updated. Please restart the downloader.{Style.RESET_ALL}")
+            console.print("[green]✓ yt-dlp successfully updated. Please restart the script.[/green]")
         except Exception as e:
-            print(f"{Back.RED}{Fore.WHITE} AUTO-UPDATE FAILED {Style.RESET_ALL} {e}")
-            print(f"{Fore.CYAN}Manual fix:{Style.RESET_ALL} {sys.executable} -m pip install --upgrade \"yt-dlp>={MIN_YT_DLP_VERSION}\"")
+            console.print(f"[bold red]Auto-update failed:[/bold red] {e}")
         sys.exit(1)
 
-# --------------------------
-# Animation Utilities
-# --------------------------
-class Spinner:
-    def __init__(self):
-        self.spinner = cycle(['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'])
-        self.running = False
-        self.thread = None
 
-    def spin(self, message):
-        self.running = True
-        sys.stdout.write("\033[?25l") 
-        while self.running:
-            sys.stdout.write(f"\r{Fore.BLUE}{next(self.spinner)}{Style.RESET_ALL} {message}...  ")
-            sys.stdout.flush()
-            time.sleep(0.1)
-        sys.stdout.write("\033[K") 
-        sys.stdout.write("\033[?25h")  
+def is_process_running(exe_name: str) -> bool:
+    try:
+        out = subprocess.run(
+            ['tasklist', '/NH', '/FI', f'IMAGENAME eq {exe_name}'],
+            capture_output=True,
+            text=True,
+            timeout=2
+        ).stdout
+        return exe_name.lower() in out.lower()
+    except Exception:
+        return False
 
-    def start(self, message):
-        self.thread = threading.Thread(target=self.spin, args=(message,))
-        self.thread.start()
 
-    def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join()
+def is_browser_installed(browser_key: str) -> bool:
+    meta = BROWSER_DEFS.get(browser_key)
+    if not meta:
+        return False
+    return any(os.path.exists(p) for p in meta['paths'])
 
 # --------------------------
-# Core Downloader Class
+# Downloader Core
 # --------------------------
 class YoutubeDownloader:
     def __init__(self):
         self.config = self.load_config()
         self.download_dir = self.config.get('download_dir', DEFAULT_DOWNLOAD_DIR)
         if not os.path.isdir(self.download_dir):
-            print(f"{Fore.YELLOW}The download directory in config does not exist. Reverting to default directory.{Style.RESET_ALL}")
             self.download_dir = DEFAULT_DOWNLOAD_DIR
             self.config['download_dir'] = DEFAULT_DOWNLOAD_DIR
             self.save_config()
-            time.sleep(1)
-            
-        self.ydl_opts = {
-            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
-            'progress_hooks': [self._progress_hook],
-            'noplaylist': True,
-        }
-        self.spinner = Spinner()
-        self.current_status = {}
-        self.downloaded_filename = None
 
-    def load_config(self):
+        self.browser_cookies = self.config.get('browser_cookies', 'firefox')
+        self.downloaded_filename: Optional[str] = None
+        self.active_progress: Optional[Progress] = None
+        self.download_task_id: Optional[int] = None
+
+    def load_config(self) -> Dict[str, Any]:
+        default_config = {
+            'download_dir': DEFAULT_DOWNLOAD_DIR,
+            'browser_cookies': 'firefox'
+        }
         if not os.path.exists(CONFIG_FILE):
-            config = {'download_dir': DEFAULT_DOWNLOAD_DIR}
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(config, f, indent=4)
-            return config
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(default_config, f, indent=4)
+            return default_config
         else:
-            with open(CONFIG_FILE, 'r') as f:
-                try:
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     config = json.load(f)
-                except Exception:
-                    config = {'download_dir': DEFAULT_DOWNLOAD_DIR}
+            except Exception:
+                config = default_config
+            if 'browser_cookies' not in config:
+                config['browser_cookies'] = 'firefox'
             return config
 
     def save_config(self):
         self.config['download_dir'] = self.download_dir
-        with open(CONFIG_FILE, 'w') as f:
+        self.config['browser_cookies'] = self.browser_cookies
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(self.config, f, indent=4)
 
-    def _progress_hook(self, d):
+    def _progress_hook(self, d: Dict[str, Any]):
         if d['status'] == 'downloading':
-            self.current_status = d
+            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 100
+            downloaded = d.get('downloaded_bytes', 0)
+            if self.active_progress and self.download_task_id is not None:
+                self.active_progress.update(
+                    self.download_task_id,
+                    total=total,
+                    completed=downloaded
+                )
         elif d['status'] == 'finished':
-            self.spinner.stop()
             self.downloaded_filename = d.get('filename')
-            print(f"\r{Fore.GREEN}✓ Processing complete{Style.RESET_ALL}")
+            if self.active_progress and self.download_task_id is not None:
+                total = d.get('total_bytes') or self.active_progress.tasks[self.download_task_id].total
+                self.active_progress.update(self.download_task_id, completed=total)
 
-    def _display_header(self):
-        os.system('cls' if os.name == 'nt' else 'clear')
-        header = f"""
-{Fore.BLUE}╭──────────────────────────────────────────╮
-{Fore.BLUE}│{Fore.CYAN}          🎬 YOUTUBE DOWNLOADER 🎵         {Fore.BLUE}│
-{Fore.BLUE}╰──────────────────────────────────────────╯{Style.RESET_ALL}
-        """
-        print(header)
-        print(f"{Fore.LIGHTBLACK_EX}  Platform: {sys.platform} | Python: {sys.version.split()[0]}{Style.RESET_ALL}\n")
+    def build_ydl_opts(self, format_choice: str) -> Dict[str, Any]:
+        opts: Dict[str, Any] = {
+            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
+            'progress_hooks': [self._progress_hook],
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
 
-    def _set_download_dir(self):
-        self._display_header()
-        print(f"{Fore.YELLOW}Current download directory:{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}{self.download_dir}{Style.RESET_ALL}")
-        change = input(f"\n{Fore.YELLOW}Change directory? (y/n):{Style.RESET_ALL} ").lower()
-        
-        if change == 'y':
-            new_dir = input(f"\n{Fore.YELLOW}Enter new path:{Style.RESET_ALL} ").strip()
-            if os.path.isdir(new_dir):
-                self.download_dir = new_dir
-                self.ydl_opts['outtmpl'] = os.path.join(self.download_dir, '%(title)s.%(ext)s')
-                self.save_config()
-                print(f"\n{Fore.GREEN}✓ Directory updated and saved to config{Style.RESET_ALL}")
-            else:
-                print(f"\n{Fore.RED}⚠ Directory not found! Keeping previous setting{Style.RESET_ALL}")
-            time.sleep(1)
+        # Browser cookies
+        if self.browser_cookies and self.browser_cookies.lower() not in ['none', 'disabled', '']:
+            opts['cookiesfrombrowser'] = (self.browser_cookies.lower(),)
 
-    def _get_choice(self, prompt, options):
-        while True:
-            self._display_header()
-            print(f"{Fore.YELLOW}{prompt}{Style.RESET_ALL}")
-            for i, (emoji, text) in enumerate(options, 1):
-                print(f"  {Fore.YELLOW}{i}) {emoji} {text}{Style.RESET_ALL}")
-            
-            try:
-                choice = input(f"\n{Fore.YELLOW}Enter choice (1-{len(options)}):{Style.RESET_ALL} ")
-                if 1 <= int(choice) <= len(options):
-                    return choice
-                raise ValueError
-            except (ValueError, KeyError):
-                print(f"\n{Back.RED}{Fore.WHITE} ERROR {Style.RESET_ALL} Invalid choice!")
-                time.sleep(1)
+        # JS Challenge Solver
+        if which('node'):
+            opts['js_runtimes'] = {'node': {}}
+            opts['remote_components'] = ['ejs:github']
 
-    def _get_url(self):
-        self._display_header()
-        return input(f"{Fore.YELLOW}🎯 Enter video URL:{Style.RESET_ALL} ").strip()
-
-    def _confirm_download(self, info):
-        self._display_header()
-        print(f"{Fore.YELLOW}📄 Video Details:{Style.RESET_ALL}")
-        print(f"  {Fore.CYAN}▸ Title: {info.get('title', 'N/A')}{Style.RESET_ALL}")
-        duration = info.get('duration')
-        if duration:
-            minutes, seconds = divmod(duration, 60)
-            duration_string = f"{minutes}m {seconds}s"
-        else:
-            duration_string = "N/A"
-        print(f"  {Fore.CYAN}▸ Duration: {duration_string}{Style.RESET_ALL}")
-        print(f"  {Fore.CYAN}▸ Channel: {info.get('uploader', 'N/A')}{Style.RESET_ALL}")
-        
-        if filesize := info.get('filesize') or info.get('filesize_approx'):
-            size_mb = filesize / (1024 * 1024)
-            print(f"  {Fore.CYAN}▸ Size: {size_mb:.1f} MB{Style.RESET_ALL}")
-        
-        return input(f"\n{Fore.YELLOW}🚀 Start download? (y/n):{Style.RESET_ALL} ").lower() == 'y'
-
-    def _set_format(self, choice):
-        format_options = {
-            '1': {'format': 'bestaudio/best', 'postprocessors': [{
+        # Format mappings
+        if format_choice == 'mp4':
+            opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+            opts['merge_output_format'] = 'mp4'
+        elif format_choice == 'mp3':
+            opts['format'] = 'bestaudio/best'
+            opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
-                'preferredquality': '192'}]},
-            '2': {'format': 'bestaudio/best'},
-            '3': {'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'},
-            '4': {'format': 'bestvideo+bestaudio/best'}
-        }
-        self.ydl_opts.update(format_options[choice])
+                'preferredquality': '192',
+            }]
+        elif format_choice == 'webm_audio':
+            opts['format'] = 'bestaudio/best'
+        elif format_choice == 'webm_video':
+            opts['format'] = 'bestvideo+bestaudio/best'
 
-    def _validate_ffmpeg(self):
+        return opts
+
+    def show_banner(self):
+        console.clear()
+        cookies_display = self.browser_cookies.capitalize() if self.browser_cookies and self.browser_cookies != 'none' else "Disabled"
+        if self.browser_cookies in BROWSER_DEFS:
+            icon = BROWSER_DEFS[self.browser_cookies]['icon']
+            cookies_display = f"{icon} {cookies_display}"
+
+        info_table = Table(show_header=False, box=box.SIMPLE, pad_edge=False)
+        info_table.add_column("Key", style="bold cyan")
+        info_table.add_column("Value", style="bold white")
+
+        info_table.add_row("📁 Download Directory:", self.download_dir)
+        info_table.add_row("🍪 Cookie Browser:", cookies_display)
+        info_table.add_row("⚡ JS Engine:", "[green]Node.js (Active)[/green]" if which('node') else "[yellow]Not found[/yellow]")
+        info_table.add_row("🎵 FFmpeg:", "[green]Ready[/green]" if which('ffmpeg') else "[red]Missing[/red]")
+
+        console.print(Panel(
+            info_table,
+            title="[bold magenta]🎬 YOUTUBE DOWNLOADER TUI[/bold magenta]",
+            subtitle="[italic white]Fast • Reliable • Modern[/italic white]",
+            border_style="bright_blue",
+            box=box.ROUNDED
+        ))
+
+    def select_browser_menu(self):
+        self.show_banner()
+        choices = []
+
+        for key, meta in BROWSER_DEFS.items():
+            installed = is_browser_installed(key)
+            running = is_process_running(meta['exe']) if installed else False
+
+            status_tags = []
+            if installed:
+                status_tags.append("[Installed]")
+            if running:
+                status_tags.append("[Running]")
+
+            status_str = f" {' '.join(status_tags)}" if status_tags else ""
+            title = f"{meta['icon']} {meta['name']}{status_str} — {meta['note']}"
+            choices.append(questionary.Choice(title=title, value=key))
+
+        choices.append(questionary.Choice(
+            title="❌ Disabled (Do not use browser cookies)",
+            value="none"
+        ))
+
+        selected = questionary.select(
+            "Select browser for YouTube authentication & cookie bypass:",
+            choices=choices,
+            default=self.browser_cookies if self.browser_cookies in BROWSER_DEFS else 'firefox',
+            style=custom_style
+        ).ask()
+
+        if selected:
+            self.browser_cookies = selected
+            self.save_config()
+            console.print(f"\n[green]✓ Cookie browser set to [bold]{selected}[/bold].[/green]")
+            time.sleep(1)
+
+    def change_directory_menu(self):
+        self.show_banner()
+        console.print(f"[bold cyan]Current download directory:[/bold cyan] {self.download_dir}\n")
+
+        new_dir = questionary.text(
+            "Enter new download directory path (or leave blank to cancel):",
+            default=self.download_dir,
+            style=custom_style
+        ).ask()
+
+        if new_dir and os.path.isdir(new_dir):
+            self.download_dir = os.path.abspath(new_dir)
+            self.save_config()
+            console.print(f"\n[green]✓ Directory updated to: {self.download_dir}[/green]")
+        elif new_dir:
+            console.print(f"\n[red]⚠ Directory '{new_dir}' not found![/red]")
+        time.sleep(1.2)
+
+    def download_flow(self):
+        self.show_banner()
         if not which('ffmpeg'):
-            print(FFMPEG_MSG)
-            sys.exit(1)
+            console.print(Panel(
+                "[bold red]FFmpeg is not installed![/bold red]\n"
+                "Please install FFmpeg, e.g. via: [cyan]winget install ffmpeg[/cyan]",
+                border_style="red"
+            ))
+            questionary.press_any_key_to_continue("Press any key to return...").ask()
+            return
 
-    def download_video(self):
-        try:
-            self._validate_ffmpeg()
-            self._display_header()
-            self._set_download_dir()
+        url = questionary.text(
+            "🎯 Enter YouTube URL:",
+            validate=lambda text: True if text.strip() else "Please enter a valid URL",
+            style=custom_style
+        ).ask()
 
-            format_options = [
-                ("🎵", "MP3 Audio (High Quality)"),
-                ("🎵", "WEBM Audio (Original Quality)"),
-                ("📹", "MP4 Video+Audio (Recommended)"),
-                ("📹", "WEBM Video+Audio (Best Quality)")
-            ]
-            choice = self._get_choice("📦 Select download format:", format_options)
-            self._set_format(choice)
+        if not url:
+            return
 
-            url = self._get_url()
+        url = url.strip()
 
-            with youtube_dl.YoutubeDL(self.ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+        # Step 1: Format selection
+        format_choices = [
+            questionary.Choice(title="📹 MP4 Video + Audio (Recommended - Best Quality)", value="mp4"),
+            questionary.Choice(title="🎵 MP3 Audio (192kbps High Quality via FFmpeg)", value="mp3"),
+            questionary.Choice(title="🎵 WEBM Audio (Original Audio Track)", value="webm_audio"),
+            questionary.Choice(title="📹 WEBM Video + Audio (Original)", value="webm_video")
+        ]
 
-            if not self._confirm_download(info):
-                print(f"\n{Fore.YELLOW}🚫 Download canceled{Style.RESET_ALL}")
+        format_choice = questionary.select(
+            "📦 Select download format:",
+            choices=format_choices,
+            style=custom_style
+        ).ask()
+
+        if not format_choice:
+            return
+
+        opts = self.build_ydl_opts(format_choice)
+
+        # Step 2: Fetch metadata
+        self.show_banner()
+        info = None
+        with console.status("[bold cyan]Fetching video details from YouTube...[/bold cyan]", spinner="dots"):
+            try:
+                with youtube_dl.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception as e:
+                err_msg = str(e)
+                console.print(f"\n[bold red]Error fetching video information:[/bold red] {err_msg}")
+                if "Sign in to confirm you" in err_msg or "bot" in err_msg:
+                    console.print("\n[yellow]💡 Tip: YouTube flagged automated traffic. Go to 'Cookie Browser' in the main menu and select Firefox (recommended) or your active browser![/yellow]")
+                elif "Could not copy Chrome cookie database" in err_msg or "DPAPI" in err_msg:
+                    console.print("\n[yellow]💡 Tip: Your selected Chromium browser is open and has locked its cookie database. Close it or switch to Firefox in Cookie Browser settings.[/yellow]")
+                questionary.press_any_key_to_continue().ask()
                 return
 
-            self.spinner.start("Downloading")
-            with youtube_dl.YoutubeDL(self.ydl_opts) as ydl:
-                ydl.download([url])
+        if not info:
+            console.print("[red]Could not retrieve video information.[/red]")
+            questionary.press_any_key_to_continue().ask()
+            return
 
-            print(f"\n{Fore.GREEN}✓ Download successful!{Style.RESET_ALL}")
-            if self.downloaded_filename:
-                print(f"{Fore.CYAN}▶ File saved to:{Style.RESET_ALL}")
-                print(f"{Fore.LIGHTBLACK_EX}{self.downloaded_filename}{Style.RESET_ALL}")
-                self._post_download_options()
-        except youtube_dl.DownloadError as e:
-            self.spinner.stop()
-            print(f"\n{Back.RED}{Fore.WHITE} ERROR {Style.RESET_ALL} {str(e)}")
-        except KeyboardInterrupt:
-            self.spinner.stop()
-            print(f"\n{Fore.YELLOW}⚠ Operation canceled{Style.RESET_ALL}")
-        except Exception as e:
-            self.spinner.stop()
-            print(f"\n{Back.RED}{Fore.WHITE} UNEXPECTED ERROR {Style.RESET_ALL} {str(e)}")
-        finally:
-            input(f"\n{Fore.LIGHTBLACK_EX}👋 Press Enter to return to menu...{Style.RESET_ALL}")
+        # Step 3: Display Video Details Table
+        table = Table(title="📄 Video Details", box=box.ROUNDED, show_header=False)
+        table.add_column("Key", style="cyan bold")
+        table.add_column("Value", style="white")
 
-    def _post_download_options(self):
-        while True:
-            self._display_header()
-            print(f"{Fore.YELLOW}What would you like to do next?{Style.RESET_ALL}")
-            options = [
-                ("📂", "Open containing folder"),
-                ("▶", "Open downloaded file"),
-                ("❌", "Do nothing")
-            ]
-            for i, (emoji, text) in enumerate(options, 1):
-                print(f"  {Fore.YELLOW}{i}) {emoji} {text}{Style.RESET_ALL}")
+        table.add_row("Title", info.get('title', 'N/A'))
+        table.add_row("Channel", info.get('uploader', 'N/A'))
+
+        duration = info.get('duration')
+        if duration:
+            m, s = divmod(duration, 60)
+            h, m = divmod(m, 60)
+            table.add_row("Duration", f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}")
+        else:
+            table.add_row("Duration", "Unknown")
+
+        if views := info.get('view_count'):
+            table.add_row("Views", f"{views:,}")
+
+        if filesize := info.get('filesize') or info.get('filesize_approx'):
+            table.add_row("Estimated Size", f"{filesize / (1024 * 1024):.1f} MB")
+
+        console.print(table)
+
+        confirm = questionary.confirm(
+            "Start download now?",
+            default=True,
+            style=custom_style
+        ).ask()
+
+        if not confirm:
+            console.print("[yellow]Download cancelled.[/yellow]")
+            time.sleep(1)
+            return
+
+        # Step 4: Live Progress Download
+        console.print("\n[bold green]Starting download...[/bold green]")
+        self.downloaded_filename = None
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(bar_width=None),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+            console=console
+        ) as progress:
+            self.active_progress = progress
+            self.download_task_id = progress.add_task(f"Downloading: {info.get('title', 'Video')[:35]}...", total=100)
+
             try:
-                choice = input(f"\n{Fore.YELLOW}Enter choice (1-{len(options)}):{Style.RESET_ALL} ")
-                if int(choice) == 1:
-                    folder = os.path.dirname(self.downloaded_filename)
-                    try:
-                        os.startfile(folder)
-                    except AttributeError:
-                        subprocess.call(["xdg-open", folder])
-                    break
-                elif int(choice) == 2:
-                    try:
-                        os.startfile(self.downloaded_filename)
-                    except AttributeError:
-                        subprocess.call(["xdg-open", self.downloaded_filename])
-                    break
-                elif int(choice) == 3:
-                    break
-                else:
-                    raise ValueError
-            except (ValueError, KeyError):
-                print(f"\n{Back.RED}{Fore.WHITE} ERROR {Style.RESET_ALL} Invalid choice!")
-                time.sleep(1)
+                with youtube_dl.YoutubeDL(opts) as ydl:
+                    ydl.download([url])
+            except Exception as e:
+                console.print(f"\n[bold red]Download error:[/bold red] {e}")
+                questionary.press_any_key_to_continue().ask()
+                return
+            finally:
+                self.active_progress = None
+                self.download_task_id = None
 
-# --------------------------
-# Main Execution Loop
-# --------------------------
+        console.print(f"\n[bold green]✓ Download completed successfully![/bold green]")
+        if self.downloaded_filename:
+            console.print(f"[cyan]Saved to:[/cyan] [bold white]{self.downloaded_filename}[/bold white]\n")
+
+        # Step 5: Post-Download Actions
+        post_choices = [
+            questionary.Choice("📂 Open destination folder in Explorer", "open_folder"),
+            questionary.Choice("▶ Play downloaded file", "open_file"),
+            questionary.Choice("🔄 Download another video", "again"),
+            questionary.Choice("🔙 Back to main menu", "menu")
+        ]
+
+        action = questionary.select(
+            "What would you like to do next?",
+            choices=post_choices,
+            style=custom_style
+        ).ask()
+
+        if action == "open_folder":
+            folder = os.path.dirname(self.downloaded_filename) if self.downloaded_filename else self.download_dir
+            try:
+                os.startfile(folder)
+            except Exception:
+                subprocess.call(["explorer", folder])
+        elif action == "open_file":
+            if self.downloaded_filename and os.path.exists(self.downloaded_filename):
+                try:
+                    os.startfile(self.downloaded_filename)
+                except Exception:
+                    subprocess.call(["explorer", self.downloaded_filename])
+        elif action == "again":
+            self.download_flow()
+
+    def run(self):
+        while True:
+            self.show_banner()
+            main_choices = [
+                questionary.Choice("🚀 Download Video", "download"),
+                questionary.Choice("🍪 Select Cookie Browser (Brave, Chrome, Firefox...)", "cookies"),
+                questionary.Choice("📁 Change Download Directory", "dir"),
+                questionary.Choice("🚪 Exit", "exit")
+            ]
+
+            choice = questionary.select(
+                "Main Menu (Use arrow keys to navigate):",
+                choices=main_choices,
+                style=custom_style
+            ).ask()
+
+            if choice == "download":
+                self.download_flow()
+            elif choice == "cookies":
+                self.select_browser_menu()
+            elif choice == "dir":
+                self.change_directory_menu()
+            elif choice == "exit" or choice is None:
+                console.print("\n[bold cyan]Goodbye![/bold cyan]")
+                break
+
+
 def main():
     ensure_recent_yt_dlp()
-    downloader = YoutubeDownloader()
-    while True:
-        downloader.download_video()
-        downloader._display_header()
-        again = input(f"\n{Fore.YELLOW}Do you want to download another video? (y/n):{Style.RESET_ALL} ").lower()
-        if again != 'y':
-            print(f"\n{Fore.CYAN}Goodbye!{Style.RESET_ALL}")
-            break
+    app = YoutubeDownloader()
+    app.run()
+
 
 if __name__ == "__main__":
     main()
